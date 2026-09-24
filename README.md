@@ -12,7 +12,7 @@ Until the first npm release, install from GitHub:
 npm install github:UprateHQ/uprate-sdk-react-native#feat/react-native-sdk
 ```
 
-After publication, use `npm install @upratehq/react-native`. The GitHub install builds the package during installation. Commit your app's lockfile so your build uses a fixed commit.
+After publication, use `npm install @upratehq/react-native`. The GitHub install builds the package during installation. This preview branch can move; commit your app's lockfile so installs keep using its resolved commit until you update it.
 
 Create an **SDK publishable key** under Apps → your app → SDK API Keys in Uprate. It starts with `uprt_pub_`. A key from Settings → API keys will not work. Keep `uprt_secret_` keys on your server; never put them in a mobile app.
 
@@ -130,7 +130,7 @@ createUprateClient({
 });
 ```
 
-Local HTTP accepts loopback, `10.0.2.2`, and private LAN addresses. Use a local fixture key and fake external adapters; never point tests at a real store account. Set `timeoutMs` between 1 and 60000 to change the HTTP timeout.
+Local HTTP accepts `localhost` and its subdomains, IPv4 loopback and private LAN addresses, IPv6 loopback `[::1]`, and Android's `10.0.2.2` alias. Custom base URLs must be absolute, with an ASCII DNS name, decimal IPv4 address, or `[::1]`; credentials, query strings, and fragments are rejected. Validation does not require React Native's global `URL` implementation, including older versions with missing URL properties. Use a local fixture key and fake external adapters; never point tests at a real store account. Set `timeoutMs` between 1 and 60000 to change the HTTP timeout.
 
 ## Development
 

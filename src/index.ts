@@ -29,6 +29,14 @@ function utf8Bytes(value: string): number {
   return bytes;
 }
 
+function exceedsCodePointLimit(value: string, limit: number): boolean {
+  let count = 0;
+  for (const _character of value) {
+    if (++count > limit) return true;
+  }
+  return false;
+}
+
 function checkedHeader(value: string, name: string, maxBytes: number): string {
   if (typeof value !== 'string' || /[\r\n]/.test(value) || utf8Bytes(value) > maxBytes) {
     throw new UprateError('invalid_config', `Invalid ${name}.`);
@@ -36,28 +44,48 @@ function checkedHeader(value: string, name: string, maxBytes: number): string {
   return value;
 }
 
+function isValidIpv4(hostname: string): boolean {
+  const octets = hostname.split('.');
+  return octets.length === 4 && octets.every((octet) =>
+    /^(0|[1-9]\d{0,2})$/.test(octet) && Number(octet) <= 255);
+}
+
 function isLocalHost(hostname: string): boolean {
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
-  if (hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '10.0.2.2') return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
-  const match = /^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(hostname);
-  return !!match && Number(match[1]) >= 16 && Number(match[1]) <= 31;
+  if (hostname === '[::1]' || hostname === '10.0.2.2') return true;
+  if (!isValidIpv4(hostname)) return false;
+  const octets = hostname.split('.').map(Number);
+  return octets[0] === 10 || octets[0] === 127 ||
+    (octets[0] === 192 && octets[1] === 168) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31);
 }
 
 function checkedBaseUrl(value: string, allowInsecureHttp: boolean): string {
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new UprateError('invalid_config', 'Invalid SDK base URL.');
+  const invalid = () => new UprateError('invalid_config', 'Invalid SDK base URL.');
+  // Older React Native URL implementations lack standard URL properties.
+  // Accept only the URL forms this SDK needs without relying on global URL.
+  if (typeof value !== 'string' || /[\s\u0000-\u001f\u007f-\u009f\\?#]/.test(value)) throw invalid();
+  const match = /^(https?):\/\/([^/]+)(\/.*)?$/i.exec(value);
+  if (!match) throw invalid();
+  const [, scheme, authority, path = ''] = match;
+  const hostAndPort = authority.startsWith('[')
+    ? /^(\[::1\])(?::([0-9]{1,5}))?$/i.exec(authority)
+    : /^([a-z0-9.-]+)(?::([0-9]{1,5}))?$/i.exec(authority);
+  if (!hostAndPort) throw invalid();
+  const hostname = hostAndPort[1].toLowerCase();
+  const port = hostAndPort[2];
+  if (port !== undefined && (Number(port) < 1 || Number(port) > 65535)) throw invalid();
+  if (hostname !== '[::1]') {
+    const labels = hostname.split('.');
+    if (hostname.length > 253 || !labels.every((label) =>
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) ||
+      (/^[0-9.]+$/.test(hostname) && !isValidIpv4(hostname))) throw invalid();
   }
-  if (url.username || url.password || url.search || url.hash ||
-    (url.protocol !== 'https:' &&
-      !(url.protocol === 'http:' && allowInsecureHttp && isLocalHost(url.hostname)))) {
+  if (/\%(?![0-9a-f]{2})/i.test(path)) throw invalid();
+  if (scheme.toLowerCase() !== 'https' && !(allowInsecureHttp && isLocalHost(hostname))) {
     throw new UprateError('invalid_config', 'SDK base URL must use HTTPS; local HTTP requires allowInsecureHttp.');
   }
-  return url.toString().replace(/\/$/, '');
+  return `${scheme.toLowerCase()}://${hostname}${port === undefined ? '' : `:${port}`}${path}`.replace(/\/$/, '');
 }
 
 function asObject(value: unknown, status: number): Record<string, unknown> {
@@ -207,6 +235,7 @@ export function createUprateClient(options: UprateClientOptions) {
     if (!userId) throw new UprateError('invalid_config', 'SDK user ID must not be empty.');
     const email = context.email === undefined ? undefined : checkedHeader(context.email, 'SDK user email', 255);
     const name = context.name === undefined ? undefined : checkedHeader(context.name, 'SDK user name', 255);
+    if (currentUser?.userId === userId && currentUser.email === email && currentUser.name === name) return;
     currentUser = { userId, email, name };
     userRevision++;
   }
@@ -303,7 +332,8 @@ export function createUprateClient(options: UprateClientOptions) {
     feedback: {
       async submit(input: SubmitFeedbackInput): Promise<FeedbackResult> {
         const snapshot = snapshotUser();
-        if (!input || typeof input.message !== 'string' || !input.message.trim() || input.message.length > 5000) {
+        if (!input || typeof input.message !== 'string' || !input.message.trim() ||
+          exceedsCodePointLimit(input.message, 5000)) {
           throw new UprateError('validation_error', 'Feedback message must be 1 to 5000 characters.');
         }
         if (input.rating !== undefined && (!Number.isInteger(input.rating) || input.rating < 1 || input.rating > 5)) {
