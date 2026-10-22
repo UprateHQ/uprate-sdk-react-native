@@ -136,9 +136,16 @@ test('the optional user token is sent on every operation and can be changed or r
   ]);
 });
 
-test('reply operations reject in-flight results after logout, user changes, or token changes', async () => {
+const history = [{ ...feedback, sentiment: null, replies: [reply] }];
+const privateReads = {
+  getMySubmissions: [(client) => client.feedback.getMySubmissions(), history],
+  getUnreadReplies: [(client) => client.feedback.getUnreadReplies(), [reply]],
+  markRead: [(client) => client.feedback.markRead([reply]), undefined],
+};
+
+test('history and reply operations reject in-flight results after logout, user changes, or token changes', async () => {
   const context = { userId: 'user-123', email: 'jane@example.com', name: 'Jane', userToken: 'a'.repeat(64) };
-  for (const method of ['getUnreadReplies', 'markRead']) {
+  for (const [call] of Object.values(privateReads)) {
     for (const change of [
       (client) => client.clearUserContext(),
       (client) => client.setUserContext({ ...context, userId: 'different' }),
@@ -154,25 +161,25 @@ test('reply operations reject in-flight results after logout, user changes, or t
         return new Promise((resolve) => { release = resolve; });
       });
       client.setUserContext(context);
-      const pending = method === 'getUnreadReplies' ? client.feedback.getUnreadReplies() : client.feedback.markRead([reply]);
+      const pending = call(client);
       change(client);
-      release(new Response(JSON.stringify({ replies: [reply] })));
+      release(new Response(JSON.stringify({ feedback: history, replies: [reply] })));
       await assert.rejects(pending, (error) => error instanceof UprateError && error.code === 'user_context_changed');
       assert.equal(headers['X-SDK-User-Token'], context.userToken);
     }
   }
 });
 
-test('repeating the same signed context keeps in-flight reply operations valid', async () => {
+test('repeating the same signed context keeps in-flight history and reply operations valid', async () => {
   const context = { userId: 'user-123', userToken: 'a'.repeat(64) };
-  for (const method of ['getUnreadReplies', 'markRead']) {
+  for (const [call, result] of Object.values(privateReads)) {
     let release;
     const client = sdk(() => new Promise((resolve) => { release = resolve; }));
     client.setUserContext(context);
-    const pending = method === 'getUnreadReplies' ? client.feedback.getUnreadReplies() : client.feedback.markRead([reply]);
+    const pending = call(client);
     client.setUserContext({ ...context });
-    release(new Response(JSON.stringify({ replies: [reply] })));
-    assert.deepEqual(await pending, method === 'getUnreadReplies' ? [reply] : undefined);
+    release(new Response(JSON.stringify({ feedback: history, replies: [reply] })));
+    assert.deepEqual(await pending, result);
   }
 });
 

@@ -269,6 +269,18 @@ export function createUprateClient(options: UprateClientOptions) {
     return { user: { ...currentUser }, revision: userRevision };
   }
 
+  // A private answer for the user who started the request must not reach the app once someone else is signed in.
+  async function requestForSameUser(
+    method: 'GET' | 'POST', path: string, body?: unknown,
+  ): Promise<{ data: unknown; status: number }> {
+    const snapshot = snapshotUser();
+    const result = await request(method, path, snapshot, body);
+    if (snapshot.revision !== userRevision) {
+      throw new UprateError('user_context_changed', 'SDK user changed during the request.');
+    }
+    return result;
+  }
+
   async function request(
     method: 'GET' | 'POST' | 'DELETE', path: string,
     snapshot: { user: UserContext; revision: number }, body?: unknown,
@@ -371,25 +383,17 @@ export function createUprateClient(options: UprateClientOptions) {
         return feedbackResult(result.data, result.status);
       },
       async getMySubmissions(): Promise<FeedbackSubmission[]> {
-        const result = await request('GET', 'feedback', snapshotUser());
+        const result = await requestForSameUser('GET', 'feedback');
         const root = assertFields(result.data, result.status, { feedback: 'array' });
         return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, result.status));
       },
       async getUnreadReplies(): Promise<FeedbackReply[]> {
-        const snapshot = snapshotUser();
-        const result = await request('GET', 'replies/unread', snapshot);
-        if (snapshot.revision !== userRevision) {
-          throw new UprateError('user_context_changed', 'SDK user changed during the request.');
-        }
+        const result = await requestForSameUser('GET', 'replies/unread');
         return feedbackReplies(result.data, result.status);
       },
       async markRead(replies: FeedbackReply[]): Promise<void> {
         if (replies.length === 0) return;
-        const snapshot = snapshotUser();
-        const result = await request('POST', 'replies/read', snapshot, { uuids: replies.map((reply) => reply.uuid) });
-        if (snapshot.revision !== userRevision) {
-          throw new UprateError('user_context_changed', 'SDK user changed during the request.');
-        }
+        const result = await requestForSameUser('POST', 'replies/read', { uuids: replies.map((reply) => reply.uuid) });
         feedbackReplies(result.data, result.status);
       },
     },
