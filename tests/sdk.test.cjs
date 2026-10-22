@@ -5,6 +5,8 @@ const { createUprateClient, UprateError } = require('../dist/index.cjs');
 const itemId = 'b2cb46ad-6d32-4bb5-9d9d-639bbf171249';
 const feature = { uuid: itemId, title: 'Dark mode', description: null, status: 'pending', created_at: '2026-01-01T00:00:00Z' };
 const feedback = { uuid: itemId, rating: 4, message: 'Looks good', status: 'received', created_at: '2026-01-01T00:00:00Z' };
+const reply = { uuid: '750cd882-ae13-4cb4-bc06-4db64d1a9dc0', feedback_uuid: itemId,
+  body: 'Thanks, fixed in 2.3', created_at: '2026-10-22T10:00:00+00:00', read_at: null };
 const roadmap = {
   settings: { voting_enabled: true, show_vote_count: false, voting_excluded_statuses: ['done'] },
   items: [{ uuid: itemId, title: 'Dark mode', description: null, status: 'planned', status_label: 'Planned', has_voted: false, voting_disabled: false }],
@@ -16,10 +18,11 @@ function sdk(fetch, extra = {}) {
   return client;
 }
 
-test('all eight operations use the SDK API contract and preserve response shapes', async () => {
+test('all ten operations use the SDK API contract and preserve response shapes', async () => {
   const calls = [];
   const responses = [roadmap, { voted: true, votes_count: 1 }, { voted: false, votes_count: 0 },
     feature, { requests: [feature] }, feedback, { feedback: [{ ...feedback, sentiment: null }] },
+    { replies: [reply] }, { replies: [{ ...reply, read_at: '2026-10-22T11:00:00+00:00' }] },
     { uuid: itemId, status: 'recorded', expires_at: '2026-01-04T00:00:00Z' }];
   const client = sdk(async (url, init) => {
     calls.push({ url, init });
@@ -33,6 +36,8 @@ test('all eight operations use the SDK API contract and preserve response shapes
   assert.equal((await client.roadmap.getMyRequests()).length, 1);
   assert.equal((await client.feedback.submit({ message: 'Looks good', rating: 4, metadata: { screen: 'home' } })).status, 'received');
   assert.equal((await client.feedback.getMySubmissions())[0].sentiment, null);
+  assert.deepEqual(await client.feedback.getUnreadReplies(), [reply]);
+  assert.equal(await client.feedback.markRead([reply]), undefined);
   assert.equal((await client.reviews.recordPrompt()).status, 'recorded');
 
   assert.deepEqual(calls.map(({ url, init }) => [init.method, new URL(url).pathname]), [
@@ -43,6 +48,8 @@ test('all eight operations use the SDK API contract and preserve response shapes
     ['GET', '/api/sdk/v1/roadmap/requests'],
     ['POST', '/api/sdk/v1/feedback'],
     ['GET', '/api/sdk/v1/feedback'],
+    ['GET', '/api/sdk/v1/replies/unread'],
+    ['POST', '/api/sdk/v1/replies/read'],
     ['POST', '/api/sdk/v1/review-signals'],
   ]);
   for (const { init } of calls) {
@@ -50,11 +57,123 @@ test('all eight operations use the SDK API contract and preserve response shapes
     assert.equal(init.headers['X-SDK-User-Id'], 'user-123');
     assert.equal(init.headers['X-SDK-Device-Platform'], 'android');
     assert.equal(init.headers['X-SDK-App-Version'], '1.2.3');
+    assert.equal(init.headers['X-SDK-User-Token'], undefined);
   }
   assert.deepEqual(JSON.parse(calls[5].init.body).metadata, {
     device: { model: 'Pixel', locale: 'en-US' }, custom: { screen: 'home' },
   });
-  assert.ok(new Date(JSON.parse(calls[7].init.body).triggered_at).getTime() > 0);
+  assert.equal(calls[7].init.body, undefined);
+  assert.equal(calls[8].init.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(calls[8].init.body), { uuids: [reply.uuid] });
+  assert.ok(new Date(JSON.parse(calls[9].init.body).triggered_at).getTime() > 0);
+});
+
+test('feedback history decodes replies and defaults missing replies to an empty list', async () => {
+  const submission = { ...feedback, sentiment: null };
+  const replies = [reply, { ...reply, uuid: itemId, read_at: '2026-10-22T11:00:00+00:00' }];
+  const client = sdk(async () => new Response(JSON.stringify({ feedback: [
+    { ...submission, replies }, submission, { ...submission, replies: [] },
+  ] })));
+  assert.deepEqual(await client.feedback.getMySubmissions(), [
+    { ...submission, replies }, { ...submission, replies: [] }, { ...submission, replies: [] },
+  ]);
+});
+
+test('reply operations and history reject malformed reply responses', async () => {
+  for (const data of [null, {}, { replies: null }, { replies: {} }, { replies: [null] },
+    { replies: [{ ...reply, body: 42 }] }, { replies: [{ ...reply, read_at: 42 }] },
+    { replies: [{ ...reply, read_at: undefined }] }]) {
+    const client = sdk(async () => new Response(JSON.stringify(data)));
+    for (const method of ['getUnreadReplies', 'markRead']) {
+      const pending = method === 'getUnreadReplies' ? client.feedback.getUnreadReplies() : client.feedback.markRead([reply]);
+      await assert.rejects(pending, (error) => error instanceof UprateError &&
+        error.code === 'unexpected_response' && error.status === 200);
+    }
+  }
+  for (const replies of [null, {}, [null], [{ ...reply, body: 42 }], [{ ...reply, read_at: 42 }]]) {
+    const client = sdk(async () => new Response(JSON.stringify({ feedback: [{ ...feedback, sentiment: null, replies }] })));
+    await assert.rejects(client.feedback.getMySubmissions(), (error) => error.code === 'unexpected_response');
+  }
+});
+
+test('marking an empty reply list read requires no user context or request', async () => {
+  const calls = [];
+  const client = createUprateClient({ apiKey: 'uprt_pub_test', platform: 'ios', fetch: async (...args) => {
+    calls.push(args);
+    return new Response(JSON.stringify({ replies: [] }));
+  } });
+  assert.equal(await client.feedback.markRead([]), undefined);
+  assert.equal(calls.length, 0);
+});
+
+test('the optional user token is sent on every operation and can be changed or removed', async () => {
+  const calls = [];
+  const responses = [roadmap, { voted: true, votes_count: 1 }, { voted: false, votes_count: 0 },
+    feature, { requests: [feature] }, feedback, { feedback: [] }, { replies: [] },
+    { replies: [] }, { uuid: itemId, status: 'recorded', expires_at: '2026-01-04T00:00:00Z' },
+    { replies: [] }, { replies: [] }];
+  const client = sdk(async (_url, init) => {
+    calls.push(init);
+    return new Response(JSON.stringify(responses.shift()));
+  });
+  client.setUserContext({ userId: 'user-123', userToken: 'a'.repeat(64) });
+  await client.roadmap.getItems();
+  await client.roadmap.vote(itemId);
+  await client.roadmap.removeVote(itemId);
+  await client.roadmap.submitRequest('Dark mode');
+  await client.roadmap.getMyRequests();
+  await client.feedback.submit({ message: 'Hello' });
+  await client.feedback.getMySubmissions();
+  await client.feedback.getUnreadReplies();
+  await client.feedback.markRead([reply]);
+  await client.reviews.recordPrompt();
+  client.setUserContext({ userId: 'user-123', userToken: 'b'.repeat(64) });
+  await client.feedback.getUnreadReplies();
+  client.setUserContext({ userId: 'user-123' });
+  await client.feedback.getUnreadReplies();
+  assert.deepEqual(calls.map((call) => call.headers['X-SDK-User-Token']), [
+    ...Array(10).fill('a'.repeat(64)), 'b'.repeat(64), undefined,
+  ]);
+});
+
+test('reply operations reject in-flight results after logout, user changes, or token changes', async () => {
+  const context = { userId: 'user-123', email: 'jane@example.com', name: 'Jane', userToken: 'a'.repeat(64) };
+  for (const method of ['getUnreadReplies', 'markRead']) {
+    for (const change of [
+      (client) => client.clearUserContext(),
+      (client) => client.setUserContext({ ...context, userId: 'different' }),
+      (client) => client.setUserContext({ ...context, email: 'other@example.com' }),
+      (client) => client.setUserContext({ ...context, name: 'Other' }),
+      (client) => client.setUserContext({ ...context, userToken: 'b'.repeat(64) }),
+      (client) => client.setUserContext({ ...context, userToken: undefined }),
+    ]) {
+      let release;
+      let headers;
+      const client = sdk((_url, init) => {
+        headers = init.headers;
+        return new Promise((resolve) => { release = resolve; });
+      });
+      client.setUserContext(context);
+      const pending = method === 'getUnreadReplies' ? client.feedback.getUnreadReplies() : client.feedback.markRead([reply]);
+      change(client);
+      release(new Response(JSON.stringify({ replies: [reply] })));
+      await assert.rejects(pending, (error) => error instanceof UprateError && error.code === 'user_context_changed');
+      assert.equal(headers['X-SDK-User-Token'], context.userToken);
+    }
+  }
+});
+
+test('repeating the same signed context keeps in-flight reply operations valid', async () => {
+  const context = { userId: 'user-123', userToken: 'a'.repeat(64) };
+  for (const method of ['getUnreadReplies', 'markRead']) {
+    let release;
+    const client = sdk(() => new Promise((resolve) => { release = resolve; }));
+    client.setUserContext(context);
+    const pending = method === 'getUnreadReplies' ? client.feedback.getUnreadReplies() : client.feedback.markRead([reply]);
+    client.setUserContext({ ...context });
+    release(new Response(JSON.stringify({ replies: [reply] })));
+    assert.deepEqual(await pending, method === 'getUnreadReplies' ? [reply] : undefined);
+  }
 });
 
 test('user context is required and does not survive logout or a pending metadata provider', async () => {
@@ -104,6 +223,7 @@ test('changing user details or logging out cancels pending metadata requests', a
   for (const action of [
     (client) => client.setUserContext({ userId: 'user-123', email: 'other@example.com', name: 'Jane' }),
     (client) => client.setUserContext({ userId: 'different', email: 'jane@example.com', name: 'Jane' }),
+    (client) => client.setUserContext({ userId: 'user-123', email: 'jane@example.com', name: 'Jane', userToken: 'a'.repeat(64) }),
     (client) => client.clearUserContext(),
   ]) {
     let releaseMetadata;
@@ -141,6 +261,7 @@ test('invalid keys, unsafe URLs, and unsafe or overlong identity headers fail lo
   const client = createUprateClient({ apiKey: 'uprt_pub_test', platform: 'ios' });
   assert.throws(() => client.setUserContext({ userId: 'a\r\nb' }), (error) => error.code === 'invalid_config');
   assert.throws(() => client.setUserContext({ userId: 'é'.repeat(128) }), (error) => error.code === 'invalid_config');
+  assert.throws(() => client.setUserContext({ userId: 'user-123', userToken: 'a\r\nb' }), (error) => error.code === 'invalid_config');
 });
 
 test('base URL validation works when React Native URL lacks standard properties', async () => {
@@ -224,6 +345,9 @@ test('feedback length counts Unicode code points at the 5000 character boundary'
 test('HTTP errors retain validation and Retry-After details without exposing response bodies', async () => {
   const cases = [
     [401, { message: 'Use publishable key' }, {}, 'invalid_api_key'],
+    [401, { message: 'User token required', code: 'user_token_required' }, {}, 'user_token_rejected'],
+    [401, { message: 'User token invalid', code: 'user_token_invalid' }, {}, 'user_token_rejected'],
+    [401, { message: 'Unknown authentication failure', code: 'other' }, {}, 'invalid_api_key'],
     [403, { message: 'disabled' }, {}, 'feature_not_enabled'],
     [404, { message: 'missing' }, {}, 'not_found'],
     [422, { message: 'Invalid', errors: { title: ['Too long'] } }, {}, 'validation_error'],
@@ -236,6 +360,7 @@ test('HTTP errors retain validation and Retry-After details without exposing res
       assert.ok(error instanceof UprateError);
       assert.equal(error.code, code);
       assert.equal(error.status, status);
+      if (status === 401) assert.equal(error.message, data.message);
       if (status === 422) assert.deepEqual(error.validationErrors, { title: ['Too long'] });
       if (status === 429) assert.equal(error.retryAfterSeconds, 4);
       if (status === 503) assert.doesNotMatch(error.message, /sensitive/);

@@ -1,6 +1,7 @@
 import { UprateError } from './error.js';
 import type {
   FeatureRequest,
+  FeedbackReply,
   FeedbackResult,
   FeedbackSubmission,
   JsonObject,
@@ -148,10 +149,21 @@ function feedbackResult(value: unknown, status: number): FeedbackResult {
 }
 
 function feedbackSubmission(value: unknown, status: number): FeedbackSubmission {
-  assertFields(value, status, {
+  const data = assertFields(value, status, {
     uuid: 'string', rating: 'number', message: 'string', sentiment: 'string', created_at: 'string',
   }, ['rating', 'sentiment']);
+  data.replies = data.replies === undefined ? [] : feedbackReplies(data, status);
   return value as FeedbackSubmission;
+}
+
+function feedbackReplies(value: unknown, status: number): FeedbackReply[] {
+  const root = assertFields(value, status, { replies: 'array' });
+  return (root.replies as unknown[]).map((item) => {
+    assertFields(item, status, {
+      uuid: 'string', feedback_uuid: 'string', body: 'string', created_at: 'string', read_at: 'string',
+    }, ['read_at']);
+    return item as FeedbackReply;
+  });
 }
 
 function retryAfterSeconds(value: string | null): number | undefined {
@@ -166,7 +178,12 @@ function errorFromResponse(status: number, body: unknown, retryAfter: string | n
   const data = body !== null && typeof body === 'object' && !Array.isArray(body)
     ? body as Record<string, unknown> : {};
   const serverMessage = typeof data.message === 'string' ? data.message : undefined;
-  if (status === 401) return new UprateError('invalid_api_key', serverMessage ?? 'Invalid SDK API key.', { status });
+  if (status === 401) {
+    if (data.code === 'user_token_required' || data.code === 'user_token_invalid') {
+      return new UprateError('user_token_rejected', serverMessage ?? 'SDK user token was rejected.', { status });
+    }
+    return new UprateError('invalid_api_key', serverMessage ?? 'Invalid SDK API key.', { status });
+  }
   if (status === 403) return new UprateError('feature_not_enabled', 'SDK feature is not enabled.', { status });
   if (status === 404) return new UprateError('not_found', 'SDK resource was not found.', { status });
   if (status === 422) {
@@ -235,8 +252,10 @@ export function createUprateClient(options: UprateClientOptions) {
     if (!userId) throw new UprateError('invalid_config', 'SDK user ID must not be empty.');
     const email = context.email === undefined ? undefined : checkedHeader(context.email, 'SDK user email', 255);
     const name = context.name === undefined ? undefined : checkedHeader(context.name, 'SDK user name', 255);
-    if (currentUser?.userId === userId && currentUser.email === email && currentUser.name === name) return;
-    currentUser = { userId, email, name };
+    const userToken = context.userToken === undefined ? undefined : checkedHeader(context.userToken, 'SDK user token', 255);
+    if (currentUser?.userId === userId && currentUser.email === email && currentUser.name === name &&
+      currentUser.userToken === userToken) return;
+    currentUser = { userId, email, name, userToken };
     userRevision++;
   }
 
@@ -265,6 +284,7 @@ export function createUprateClient(options: UprateClientOptions) {
     };
     if (snapshot.user.email !== undefined) headers['X-SDK-User-Email'] = snapshot.user.email;
     if (snapshot.user.name !== undefined) headers['X-SDK-User-Name'] = snapshot.user.name;
+    if (snapshot.user.userToken !== undefined) headers['X-SDK-User-Token'] = snapshot.user.userToken;
     if (appVersion !== undefined) headers['X-SDK-App-Version'] = appVersion;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const encodedBody = body === undefined ? undefined : jsonBody(body);
@@ -354,6 +374,23 @@ export function createUprateClient(options: UprateClientOptions) {
         const result = await request('GET', 'feedback', snapshotUser());
         const root = assertFields(result.data, result.status, { feedback: 'array' });
         return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, result.status));
+      },
+      async getUnreadReplies(): Promise<FeedbackReply[]> {
+        const snapshot = snapshotUser();
+        const result = await request('GET', 'replies/unread', snapshot);
+        if (snapshot.revision !== userRevision) {
+          throw new UprateError('user_context_changed', 'SDK user changed during the request.');
+        }
+        return feedbackReplies(result.data, result.status);
+      },
+      async markRead(replies: FeedbackReply[]): Promise<void> {
+        if (replies.length === 0) return;
+        const snapshot = snapshotUser();
+        const result = await request('POST', 'replies/read', snapshot, { uuids: replies.map((reply) => reply.uuid) });
+        if (snapshot.revision !== userRevision) {
+          throw new UprateError('user_context_changed', 'SDK user changed during the request.');
+        }
+        feedbackReplies(result.data, result.status);
       },
     },
     reviews: {
