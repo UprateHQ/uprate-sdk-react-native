@@ -122,12 +122,16 @@ Call `getUnreadReplies()` when your app becomes active, show the replies in your
 ```ts
 import { AppState } from 'react-native';
 
+// Increase in onLogin and onLogout, so a check started for one person never shows or marks replies for the next.
+let session = 0;
+
 async function checkReplies() {
+  const started = session;
   try {
     const replies = await uprate.feedback.getUnreadReplies();
-    if (replies.length === 0) return;
+    if (replies.length === 0 || started !== session) return;
     await showReplies(replies);
-    await uprate.feedback.markRead(replies);
+    if (started === session) await uprate.feedback.markRead(replies);
   } catch (error) {
     handleError(error);
   }
