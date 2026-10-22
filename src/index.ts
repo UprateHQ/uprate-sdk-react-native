@@ -269,20 +269,21 @@ export function createUprateClient(options: UprateClientOptions) {
     return { user: { ...currentUser }, revision: userRevision };
   }
 
-  // A private answer for the user who started the request must not reach the app once someone else is signed in.
-  async function requestForSameUser(
-    method: 'GET' | 'POST', path: string, body?: unknown,
-  ): Promise<{ data: unknown; status: number }> {
+  // A private answer, or an error such as a rejected token, for the user who started the request must not reach
+  // the app once someone else is signed in. The check and the decoding run in the step that settles the operation.
+  async function requestForSameUser<T>(
+    method: 'GET' | 'POST', path: string, decode: (data: unknown, status: number) => T, body?: unknown,
+  ): Promise<T> {
     const snapshot = snapshotUser();
-    // An error for the previous user, such as their rejected token, is just as stale as their data.
-    const result = await request(method, path, snapshot, body).catch((error: unknown) => {
-      if (snapshot.revision === userRevision) throw error;
-      return null;
-    });
-    if (result === null || snapshot.revision !== userRevision) {
-      throw new UprateError('user_context_changed', 'SDK user changed during the request.');
+    const changed = () => new UprateError('user_context_changed', 'SDK user changed during the request.');
+    let result: { data: unknown; status: number };
+    try {
+      result = await request(method, path, snapshot, body);
+    } catch (error) {
+      throw snapshot.revision === userRevision ? error : changed();
     }
-    return result;
+    if (snapshot.revision !== userRevision) throw changed();
+    return decode(result.data, result.status);
   }
 
   async function request(
@@ -386,19 +387,20 @@ export function createUprateClient(options: UprateClientOptions) {
         });
         return feedbackResult(result.data, result.status);
       },
-      async getMySubmissions(): Promise<FeedbackSubmission[]> {
-        const result = await requestForSameUser('GET', 'feedback');
-        const root = assertFields(result.data, result.status, { feedback: 'array' });
-        return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, result.status));
+      getMySubmissions(): Promise<FeedbackSubmission[]> {
+        return requestForSameUser('GET', 'feedback', (data, status) => {
+          const root = assertFields(data, status, { feedback: 'array' });
+          return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, status));
+        });
       },
-      async getUnreadReplies(): Promise<FeedbackReply[]> {
-        const result = await requestForSameUser('GET', 'replies/unread');
-        return feedbackReplies(result.data, result.status);
+      getUnreadReplies(): Promise<FeedbackReply[]> {
+        return requestForSameUser('GET', 'replies/unread', feedbackReplies);
       },
-      async markRead(replies: FeedbackReply[]): Promise<void> {
-        if (replies.length === 0) return;
-        const result = await requestForSameUser('POST', 'replies/read', { uuids: replies.map((reply) => reply.uuid) });
-        feedbackReplies(result.data, result.status);
+      markRead(replies: FeedbackReply[]): Promise<void> {
+        if (replies.length === 0) return Promise.resolve();
+        return requestForSameUser('POST', 'replies/read', (data, status) => { feedbackReplies(data, status); }, {
+          uuids: replies.map((reply) => reply.uuid),
+        });
       },
     },
     reviews: {

@@ -133,14 +133,12 @@ async function checkReplies() {
   }
 }
 
-// A cold start is already active and sends no change event.
-if (AppState.currentState === 'active') void checkReplies();
 const subscription = AppState.addEventListener('change', (state) => {
   if (state === 'active') void checkReplies();
 });
 ```
 
-Your app supplies `showReplies`, which resolves after the user has seen the replies, and `handleError`. Call `subscription.remove()` when the owning component unmounts. The SDK does not observe the app lifecycle, poll for replies, persist results, or display UI. It has no `react-native` dependency. `markRead([])` makes no request.
+Also call `checkReplies()` at the end of `onLogin`, so a session restored on a cold start gets its replies too, and close any replies on screen in `onLogout` before the next person signs in. Your app supplies `showReplies`, which resolves after the user has seen the replies, and `handleError`. Call `subscription.remove()` when the owning component unmounts. The SDK does not observe the app lifecycle, poll for replies, persist results, or display UI. It has no `react-native` dependency. `markRead([])` makes no request.
 
 ## Errors and local development
 

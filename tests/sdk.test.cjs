@@ -173,6 +173,39 @@ test('history and reply operations reject in-flight results after logout, user c
   }
 });
 
+test('history and reply operations never settle with the previous user\'s answer after a switch', async () => {
+  // Settlement isn't observable from a then() callback without one more microtask, so watch the promise itself.
+  const ids = new WeakMap();
+  const settled = new Set();
+  const hook = require('node:async_hooks').createHook({
+    init(id, type, _trigger, resource) { if (type === 'PROMISE') ids.set(resource, id); },
+    promiseResolve(id) { settled.add(id); },
+  }).enable();
+  try {
+    for (const [call] of Object.values(privateReads)) for (const [status, body] of [
+      [200, { feedback: history, replies: [reply] }],
+      [401, { message: 'Invalid user token', code: 'user_token_invalid' }],
+    ]) for (let depth = 0; depth <= 8; depth++) {
+      let releaseBody;
+      const client = sdk(async () => ({
+        ok: status === 200, status, headers: new Headers(),
+        text: () => new Promise((resolve) => { releaseBody = resolve; }),
+      }));
+      const pending = call(client);
+      await new Promise((resolve) => setImmediate(resolve));
+      let switchedFirst = false;
+      let step = () => { switchedFirst = !settled.has(ids.get(pending)); client.setUserContext({ userId: 'other' }); };
+      for (let i = 0; i < depth; i++) { const next = step; step = () => queueMicrotask(next); }
+      releaseBody(JSON.stringify(body));
+      step();
+      const code = await pending.then(() => 'settled', (error) => error.code);
+      if (switchedFirst) assert.equal(code, 'user_context_changed', `${status} with the switch ${depth} microtasks after the body`);
+    }
+  } finally {
+    hook.disable();
+  }
+});
+
 test('repeating the same signed context keeps in-flight history and reply operations valid', async () => {
   const context = { userId: 'user-123', userToken: 'a'.repeat(64) };
   for (const [call, result] of Object.values(privateReads)) {
