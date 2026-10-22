@@ -18,6 +18,11 @@ export { UprateError } from './error.js';
 export type { UprateErrorCode } from './error.js';
 export type * from './types.js';
 
+export function replyIdFromPush(data: Record<string, unknown> | null | undefined): string | null {
+  const replyId = data?.uprate_reply_uuid;
+  return typeof replyId === 'string' && replyId.length > 0 ? replyId : null;
+}
+
 const DEFAULT_URL = 'https://app.upratehq.com/api/sdk/v1';
 const MAX_TIMEOUT_MS = 60_000;
 
@@ -401,6 +406,24 @@ export function createUprateClient(options: UprateClientOptions) {
         return requestForSameUser('POST', 'replies/read', (data, status) => { feedbackReplies(data, status); }, {
           uuids: replies.map((reply) => reply.uuid),
         });
+      },
+      async registerPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        const snapshot = snapshotUser();
+        if (!input || typeof input.token !== 'string' || !input.token.trim() ||
+          (input.provider !== 'apns' && input.provider !== 'fcm')) {
+          throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
+        }
+        const result = await request('POST', 'push-tokens', snapshot, { token: input.token, provider: input.provider });
+        assertFields(result.data, result.status, { status: 'string' });
+      },
+      async unregisterPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        const snapshot = snapshotUser();
+        if (!input || typeof input.token !== 'string' || !input.token.trim() ||
+          (input.provider !== 'apns' && input.provider !== 'fcm')) {
+          throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
+        }
+        const result = await request('DELETE', 'push-tokens', snapshot, { token: input.token, provider: input.provider });
+        assertFields(result.data, result.status, { status: 'string' });
       },
     },
     reviews: {

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createUprateClient, UprateError } = require('../dist/index.cjs');
+const { createUprateClient, replyIdFromPush, UprateError } = require('../dist/index.cjs');
 
 const itemId = 'b2cb46ad-6d32-4bb5-9d9d-639bbf171249';
 const feature = { uuid: itemId, title: 'Dark mode', description: null, status: 'pending', created_at: '2026-01-01T00:00:00Z' };
@@ -68,6 +68,72 @@ test('all ten operations use the SDK API contract and preserve response shapes',
   assert.ok(new Date(JSON.parse(calls[9].init.body).triggered_at).getTime() > 0);
 });
 
+test('push tokens use POST and DELETE with JSON bodies for both native providers', async () => {
+  for (const [platform, provider] of [['ios', 'apns'], ['android', 'fcm']]) {
+    const calls = [];
+    const client = sdk(async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify({ status: init.method === 'POST' ? 'registered' : 'removed' }));
+    }, { platform });
+    client.setUserContext({ userId: 'user-123', userToken: 'a'.repeat(64) });
+    const input = { token: 'native/token+with=punctuation', provider };
+    assert.equal(await client.feedback.registerPushToken(input), undefined);
+    assert.equal(await client.feedback.unregisterPushToken(input), undefined);
+    assert.deepEqual(calls.map(({ url, init }) => [init.method, url, JSON.parse(init.body)]), [
+      ['POST', 'https://app.upratehq.com/api/sdk/v1/push-tokens', input],
+      ['DELETE', 'https://app.upratehq.com/api/sdk/v1/push-tokens', input],
+    ]);
+    for (const { init } of calls) {
+      assert.equal(init.headers['Content-Type'], 'application/json');
+      assert.equal(init.headers.Authorization, 'Bearer uprt_pub_test');
+      assert.equal(init.headers['X-SDK-User-Id'], 'user-123');
+      assert.equal(init.headers['X-SDK-User-Token'], 'a'.repeat(64));
+      assert.equal(init.headers['X-SDK-Device-Platform'], platform);
+    }
+  }
+});
+
+test('push token operations reject invalid input and require user context before sending', async () => {
+  const calls = [];
+  const client = sdk(async (...args) => {
+    calls.push(args);
+    return new Response(JSON.stringify({ status: 'registered' }));
+  });
+  for (const method of ['registerPushToken', 'unregisterPushToken']) {
+    for (const input of [undefined, null, {},
+      ...[undefined, null, 42, '', '  \n  '].map((token) => ({ token, provider: 'apns' })),
+      ...[undefined, null, 42, '', 'ios', 'android', 'expo', 'APNS'].map((provider) => ({ token: 'native-token', provider }))]) {
+      await assert.rejects(client.feedback[method](input),
+        (error) => error instanceof UprateError && error.code === 'validation_error');
+    }
+  }
+  client.clearUserContext();
+  for (const method of ['registerPushToken', 'unregisterPushToken']) {
+    await assert.rejects(client.feedback[method]({ token: 'native-token', provider: 'fcm' }),
+      (error) => error instanceof UprateError && error.code === 'user_context_not_set');
+  }
+  assert.equal(calls.length, 0);
+});
+
+test('push token operations reject malformed status responses', async () => {
+  for (const data of [null, [], {}, { status: null }, { status: 42 }, { status: false }, { status: {} }]) {
+    const client = sdk(async () => new Response(JSON.stringify(data)));
+    for (const method of ['registerPushToken', 'unregisterPushToken']) {
+      await assert.rejects(client.feedback[method]({ token: 'native-token', provider: 'apns' }),
+        (error) => error instanceof UprateError && error.code === 'unexpected_response' && error.status === 200);
+    }
+  }
+});
+
+test('replyIdFromPush recognizes a non-empty reply ID without a client or request', () => {
+  assert.equal(replyIdFromPush({ aps: { alert: { title: 'New reply' } }, uprate_reply_uuid: reply.uuid }), reply.uuid);
+  assert.equal(replyIdFromPush({ uprate_reply_uuid: 'reply-id', uprate_feedback_uuid: itemId }), 'reply-id');
+  for (const data of [null, undefined, {}, { uprate_feedback_uuid: itemId },
+    ...[undefined, null, '', 42, false, [], {}].map((uprate_reply_uuid) => ({ uprate_reply_uuid }))]) {
+    assert.equal(replyIdFromPush(data), null);
+  }
+});
+
 test('feedback history decodes replies and defaults missing replies to an empty list', async () => {
   const submission = { ...feedback, sentiment: null };
   const replies = [reply, { ...reply, uuid: itemId, read_at: '2026-10-22T11:00:00+00:00' }];
@@ -110,7 +176,8 @@ test('the optional user token is sent on every operation and can be changed or r
   const calls = [];
   const responses = [roadmap, { voted: true, votes_count: 1 }, { voted: false, votes_count: 0 },
     feature, { requests: [feature] }, feedback, { feedback: [] }, { replies: [] },
-    { replies: [] }, { uuid: itemId, status: 'recorded', expires_at: '2026-01-04T00:00:00Z' },
+    { replies: [] }, { status: 'registered' }, { status: 'removed' },
+    { uuid: itemId, status: 'recorded', expires_at: '2026-01-04T00:00:00Z' },
     { replies: [] }, { replies: [] }];
   const client = sdk(async (_url, init) => {
     calls.push(init);
@@ -126,13 +193,15 @@ test('the optional user token is sent on every operation and can be changed or r
   await client.feedback.getMySubmissions();
   await client.feedback.getUnreadReplies();
   await client.feedback.markRead([reply]);
+  await client.feedback.registerPushToken({ token: 'native-token', provider: 'fcm' });
+  await client.feedback.unregisterPushToken({ token: 'native-token', provider: 'fcm' });
   await client.reviews.recordPrompt();
   client.setUserContext({ userId: 'user-123', userToken: 'b'.repeat(64) });
   await client.feedback.getUnreadReplies();
   client.setUserContext({ userId: 'user-123' });
   await client.feedback.getUnreadReplies();
   assert.deepEqual(calls.map((call) => call.headers['X-SDK-User-Token']), [
-    ...Array(10).fill('a'.repeat(64)), 'b'.repeat(64), undefined,
+    ...Array(12).fill('a'.repeat(64)), 'b'.repeat(64), undefined,
   ]);
 });
 
