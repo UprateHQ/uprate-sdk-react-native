@@ -144,6 +144,41 @@ const subscription = AppState.addEventListener('change', (state) => {
 
 Also call `checkReplies()` at the end of `onLogin`, so a session restored on a cold start gets its replies too, and close any replies on screen in `onLogout` before the next person signs in. Your app supplies `showReplies`, which resolves after the user has seen the replies, and `handleError`. Call `subscription.remove()` when the owning component unmounts. The SDK does not observe the app lifecycle, poll for replies, persist results, or display UI. It has no `react-native` dependency. `markRead([])` makes no request.
 
+## Push notifications
+
+Uprate sends a notification when a reply arrives, without the reply text. Upload your APNs `.p8` credentials and FCM service-account JSON on your app's SDK page, in the **Push** tab.
+
+Your app owns notification permission, native token acquisition, and tap handling. For example, `expo-notifications` provides `getDevicePushTokenAsync()`: its `type` is `ios` or `android`, which maps to `apns` or `fcm`. Use this native device token, not an Expo push token. The Uprate SDK stays dependency-free.
+
+Register after `setUserContext` and whenever the native token changes. Unregister before `clearUserContext` on logout. On a notification tap, use `replyIdFromPush` to recognize an Uprate reply, then call `getUnreadReplies()` to fetch its text:
+
+```ts
+import * as Notifications from 'expo-notifications';
+import { replyIdFromPush } from '@upratehq/react-native';
+
+const deviceToken = await Notifications.getDevicePushTokenAsync();
+const token = deviceToken.data;
+const provider = deviceToken.type === 'ios' ? 'apns' : 'fcm';
+
+uprate.setUserContext({ userId: user.id, userToken: user.userToken });
+await uprate.feedback.registerPushToken({ token, provider });
+
+Notifications.addNotificationResponseReceivedListener((response) => {
+  if (replyIdFromPush(response.notification.request.content.data) !== null) void checkReplies();
+});
+
+async function onLogout() {
+  // Clear the user context even when unregistering fails, for example offline. Until the device is unregistered
+  // or someone else registers it, it can still get the previous person's reply notifications (never their text).
+  // If unregistering fails, keep this user context and the token, and on the next start set the context again,
+  // unregister, then clear it.
+  await uprate.feedback.unregisterPushToken({ token, provider }).catch(() => undefined);
+  uprate.clearUserContext();
+}
+```
+
+`checkReplies` is the function from [Replies in your app](#replies-in-your-app). `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request. Apps made for kids can't use push; `registerPushToken` rejects with `feature_not_enabled` for them.
+
 ## Errors and local development
 
 Operations throw `UprateError` with a stable `code`: `user_context_not_set`, `user_context_changed`, `user_token_rejected` (401 with `user_token_required` or `user_token_invalid`, preserving the server message), `invalid_api_key` (other 401 responses), `feature_not_enabled` (403), `not_found` (404), `validation_error` (422), `rate_limited` (429), `timeout`, `network_error`, `server_error`, or `unexpected_response`. `validationErrors` holds field errors from a 422 response; `retryAfterSeconds` holds a 429 delay when provided. The SDK does not automatically retry writes. The 15-second timeout applies to the HTTP request, not to your metadata provider.
