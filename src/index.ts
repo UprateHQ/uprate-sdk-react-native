@@ -274,8 +274,12 @@ export function createUprateClient(options: UprateClientOptions) {
     method: 'GET' | 'POST', path: string, body?: unknown,
   ): Promise<{ data: unknown; status: number }> {
     const snapshot = snapshotUser();
-    const result = await request(method, path, snapshot, body);
-    if (snapshot.revision !== userRevision) {
+    // An error for the previous user, such as their rejected token, is just as stale as their data.
+    const result = await request(method, path, snapshot, body).catch((error: unknown) => {
+      if (snapshot.revision === userRevision) throw error;
+      return null;
+    });
+    if (result === null || snapshot.revision !== userRevision) {
       throw new UprateError('user_context_changed', 'SDK user changed during the request.');
     }
     return result;

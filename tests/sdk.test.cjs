@@ -145,7 +145,10 @@ const privateReads = {
 
 test('history and reply operations reject in-flight results after logout, user changes, or token changes', async () => {
   const context = { userId: 'user-123', email: 'jane@example.com', name: 'Jane', userToken: 'a'.repeat(64) };
-  for (const [call] of Object.values(privateReads)) {
+  for (const [call] of Object.values(privateReads)) for (const answer of [
+    () => new Response(JSON.stringify({ feedback: history, replies: [reply] })),
+    () => new Response(JSON.stringify({ message: 'Invalid user token', code: 'user_token_invalid' }), { status: 401 }),
+  ]) {
     for (const change of [
       (client) => client.clearUserContext(),
       (client) => client.setUserContext({ ...context, userId: 'different' }),
@@ -163,7 +166,7 @@ test('history and reply operations reject in-flight results after logout, user c
       client.setUserContext(context);
       const pending = call(client);
       change(client);
-      release(new Response(JSON.stringify({ feedback: history, replies: [reply] })));
+      release(answer());
       await assert.rejects(pending, (error) => error instanceof UprateError && error.code === 'user_context_changed');
       assert.equal(headers['X-SDK-User-Token'], context.userToken);
     }
