@@ -175,13 +175,15 @@ Notifications.addNotificationResponseReceivedListener((response) => {
 });
 
 async function onLogout() {
-  // Clear the user context even when unregistering fails, for example offline.
+  // Clear the user context even when unregistering fails, for example offline. Until the device is unregistered
+  // or someone else registers it, it can still get the previous person's reply notifications (never their text),
+  // so keep the token and try unregistering again the next time the app starts signed out.
   await uprate.feedback.unregisterPushToken({ token, provider }).catch(() => undefined);
   uprate.clearUserContext();
 }
 ```
 
-Your app supplies `showReplies` as above. `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request.
+Your app supplies `showReplies` as above. `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request. Apps made for kids can't use push; `registerPushToken` rejects with `feature_not_enabled` for them.
 
 ## Errors and local development
 

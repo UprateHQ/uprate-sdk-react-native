@@ -338,6 +338,21 @@ export function createUprateClient(options: UprateClientOptions) {
     return { data, status: response.status };
   }
 
+  // One change at a time, so a slow registration can't reach the server after the logout that unregisters the device.
+  let lastPushTokenChange: Promise<unknown> = Promise.resolve();
+  async function changePushToken(method: 'POST' | 'DELETE', input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+    const snapshot = snapshotUser();
+    if (!input || typeof input.token !== 'string' || !input.token.trim() ||
+      (input.provider !== 'apns' && input.provider !== 'fcm')) {
+      throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
+    }
+    const change = lastPushTokenChange.then(() =>
+      request(method, 'push-tokens', snapshot, { token: input.token, provider: input.provider }));
+    lastPushTokenChange = change.catch(() => undefined);
+    const result = await change;
+    assertFields(result.data, result.status, { status: 'string' });
+  }
+
   async function deviceMetadata(enabled: boolean): Promise<JsonObject | null> {
     if (!enabled || !options.deviceMetadataProvider) return null;
     return validatedMetadata(await options.deviceMetadataProvider(), 'Device metadata');
@@ -407,23 +422,11 @@ export function createUprateClient(options: UprateClientOptions) {
           uuids: replies.map((reply) => reply.uuid),
         });
       },
-      async registerPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
-        const snapshot = snapshotUser();
-        if (!input || typeof input.token !== 'string' || !input.token.trim() ||
-          (input.provider !== 'apns' && input.provider !== 'fcm')) {
-          throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
-        }
-        const result = await request('POST', 'push-tokens', snapshot, { token: input.token, provider: input.provider });
-        assertFields(result.data, result.status, { status: 'string' });
+      registerPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        return changePushToken('POST', input);
       },
-      async unregisterPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
-        const snapshot = snapshotUser();
-        if (!input || typeof input.token !== 'string' || !input.token.trim() ||
-          (input.provider !== 'apns' && input.provider !== 'fcm')) {
-          throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
-        }
-        const result = await request('DELETE', 'push-tokens', snapshot, { token: input.token, provider: input.provider });
-        assertFields(result.data, result.status, { status: 'string' });
+      unregisterPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        return changePushToken('DELETE', input);
       },
     },
     reviews: {

@@ -68,6 +68,26 @@ test('all ten operations use the SDK API contract and preserve response shapes',
   assert.ok(new Date(JSON.parse(calls[9].init.body).triggered_at).getTime() > 0);
 });
 
+// A slow registration must not reach the server after the logout that unregisters the device.
+test('push token changes go out one at a time', async () => {
+  const methods = [];
+  let releaseRegistration;
+  const client = sdk((_url, init) => {
+    methods.push(init.method);
+    const answer = new Response(JSON.stringify({ status: 'ok' }));
+    return init.method === 'POST' ? new Promise((resolve) => { releaseRegistration = () => resolve(answer); }) : answer;
+  });
+  const input = { token: 'native-token', provider: 'fcm' };
+  const registration = client.feedback.registerPushToken(input);
+  const unregistration = client.feedback.unregisterPushToken(input);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(methods, ['POST']);
+  releaseRegistration();
+  await registration;
+  await unregistration;
+  assert.deepEqual(methods, ['POST', 'DELETE']);
+});
+
 test('push tokens use POST and DELETE with JSON bodies for both native providers', async () => {
   for (const [platform, provider] of [['ios', 'apns'], ['android', 'fcm']]) {
     const calls = [];
