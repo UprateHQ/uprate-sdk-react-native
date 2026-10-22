@@ -92,6 +92,26 @@ test('push token changes go out one at a time', async () => {
   assert.deepEqual(tokens, ['native-token', 'native-token']);
 });
 
+test('push token changes from two clients in one app also go out one at a time', async () => {
+  const methods = [];
+  let releaseRegistration;
+  const fetch = (_url, init) => {
+    methods.push(init.method);
+    const answer = new Response(JSON.stringify({ status: 'ok' }));
+    return init.method === 'POST' ? new Promise((resolve) => { releaseRegistration = () => resolve(answer); }) : answer;
+  };
+  const [first, second] = [sdk(fetch), sdk(fetch)];
+  const input = { token: 'native-token', provider: 'fcm' };
+  const registration = first.feedback.registerPushToken(input);
+  const unregistration = second.feedback.unregisterPushToken(input);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(methods, ['POST']);
+  releaseRegistration();
+  await registration;
+  await unregistration;
+  assert.deepEqual(methods, ['POST', 'DELETE']);
+});
+
 test('push tokens use POST and DELETE with JSON bodies for both native providers', async () => {
   for (const [platform, provider] of [['ios', 'apns'], ['android', 'fcm']]) {
     const calls = [];

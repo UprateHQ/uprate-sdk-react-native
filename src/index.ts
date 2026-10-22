@@ -227,6 +227,10 @@ function validatedMetadata(value: JsonObject | null, name: string): JsonObject |
   return value;
 }
 
+// One change at a time across every client in the app, so a slow registration can't reach the server after the
+// logout that unregisters the device.
+let lastPushTokenChange: Promise<unknown> = Promise.resolve();
+
 export function createUprateClient(options: UprateClientOptions) {
   if (!options || typeof options !== 'object') throw new UprateError('invalid_config', 'SDK options are required.');
   const apiKey = checkedHeader(options.apiKey, 'SDK API key', 512);
@@ -338,8 +342,6 @@ export function createUprateClient(options: UprateClientOptions) {
     return { data, status: response.status };
   }
 
-  // One change at a time, so a slow registration can't reach the server after the logout that unregisters the device.
-  let lastPushTokenChange: Promise<unknown> = Promise.resolve();
   async function changePushToken(method: 'POST' | 'DELETE', input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
     const snapshot = snapshotUser();
     if (!input || typeof input.token !== 'string' || !input.token.trim() ||
