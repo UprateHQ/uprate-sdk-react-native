@@ -170,13 +170,18 @@ async function onNotificationTap(data: Record<string, unknown>) {
   await uprate.feedback.markRead(replies);
 }
 
+Notifications.addNotificationResponseReceivedListener((response) => {
+  void onNotificationTap(response.notification.request.content.data);
+});
+
 async function onLogout() {
-  await uprate.feedback.unregisterPushToken({ token, provider });
+  // Clear the user context even when unregistering fails, for example offline.
+  await uprate.feedback.unregisterPushToken({ token, provider }).catch(() => undefined);
   uprate.clearUserContext();
 }
 ```
 
-Pass the tapped notification's data to `onNotificationTap`; your app supplies `showReplies` as above. `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request.
+Your app supplies `showReplies` as above. `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request.
 
 ## Errors and local development
 
