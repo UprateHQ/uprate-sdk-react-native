@@ -346,8 +346,8 @@ export function createUprateClient(options: UprateClientOptions) {
       (input.provider !== 'apns' && input.provider !== 'fcm')) {
       throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
     }
-    const change = lastPushTokenChange.then(() =>
-      request(method, 'push-tokens', snapshot, { token: input.token, provider: input.provider }));
+    const body = { token: input.token, provider: input.provider };
+    const change = lastPushTokenChange.then(() => request(method, 'push-tokens', snapshot, body));
     lastPushTokenChange = change.catch(() => undefined);
     const result = await change;
     assertFields(result.data, result.status, { status: 'string' });
