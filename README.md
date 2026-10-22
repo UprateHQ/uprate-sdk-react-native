@@ -169,8 +169,9 @@ Notifications.addNotificationResponseReceivedListener((response) => {
 
 async function onLogout() {
   // Clear the user context even when unregistering fails, for example offline. Until the device is unregistered
-  // or someone else registers it, it can still get the previous person's reply notifications (never their text),
-  // so keep the token and try unregistering again the next time the app starts signed out.
+  // or someone else registers it, it can still get the previous person's reply notifications (never their text).
+  // If unregistering fails, keep this user context and the token, and on the next start set the context again,
+  // unregister, then clear it.
   await uprate.feedback.unregisterPushToken({ token, provider }).catch(() => undefined);
   uprate.clearUserContext();
 }
