@@ -122,8 +122,7 @@ Call `getUnreadReplies()` when your app becomes active, show the replies in your
 ```ts
 import { AppState } from 'react-native';
 
-const subscription = AppState.addEventListener('change', async (state) => {
-  if (state !== 'active') return;
+async function checkReplies() {
   try {
     const replies = await uprate.feedback.getUnreadReplies();
     if (replies.length === 0) return;
@@ -132,6 +131,12 @@ const subscription = AppState.addEventListener('change', async (state) => {
   } catch (error) {
     handleError(error);
   }
+}
+
+// A cold start is already active and sends no change event.
+if (AppState.currentState === 'active') void checkReplies();
+const subscription = AppState.addEventListener('change', (state) => {
+  if (state === 'active') void checkReplies();
 });
 ```
 
