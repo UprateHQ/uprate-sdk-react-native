@@ -2,6 +2,7 @@ export type UprateErrorCode =
   | 'invalid_config'
   | 'user_context_not_set'
   | 'user_context_changed'
+  | 'user_token_rejected'
   | 'invalid_api_key'
   | 'feature_not_enabled'
   | 'not_found'

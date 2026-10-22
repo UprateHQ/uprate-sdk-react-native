@@ -34,8 +34,8 @@ export const uprate = createUprateClient({
 });
 
 // After your app signs a user in, use its stable user ID. Email/name are optional.
-export function onLogin(user: { id: string; email?: string }) {
-  uprate.setUserContext({ userId: user.id, email: user.email });
+export function onLogin(user: { id: string; email?: string; userToken?: string }) {
+  uprate.setUserContext({ userId: user.id, email: user.email, userToken: user.userToken });
 }
 
 // On logout, before showing another user's data:
@@ -44,9 +44,9 @@ export function onLogout() {
 }
 ```
 
-Create one client for the app. Set user context after sign-in and clear it on logout. Every operation requires user context. The SDK keeps it in memory and does not invent or persist a device ID. Each request uses the identity captured when that operation began; no HTTP request is sent if the user changes while metadata is being collected. Clearing context blocks new requests, but a request already sent can still finish. Clear or ignore its result in your app's UI after logout; the SDK does not cache results.
+Create one client for the app. Set user context after sign-in and clear it on logout. Every operation requires user context, except `markRead([])`, which does nothing. The SDK keeps context in memory and does not invent or persist a device ID. Each request uses the identity captured when that operation began; no HTTP request is sent if the context changes while metadata is being collected. `getMySubmissions()`, `getUnreadReplies()` and `markRead()` also reject with `user_context_changed` if the context changes while the request is in flight, so one person's feedback and replies never reach the next person signed in. This includes token changes. Other requests already sent can still finish; clear or ignore their results in your app's UI after logout. The SDK does not cache results.
 
-The publishable key and `userId` are **not user authentication**. The current SDK API accepts the user ID supplied by the app. A modified client can claim another ID, including for `getMySubmissions()`. Do not use this API to expose information that requires verified user identity until the server supports signed identity.
+The publishable key and `userId` alone are **not user authentication**. For verified identity, obtain `userToken` from your server and pass it to `setUserContext`. Your server signs the user ID with HMAC-SHA256 and returns the hex token; keep the signing secret on your server. The SDK sends the token as `X-SDK-User-Token` on every request. Require verified users on the backend before exposing sensitive user data. See [Verify users](https://upratehq.com/docs/sdk#verify-users).
 
 ### Expo device metadata
 
@@ -115,9 +115,38 @@ await uprate.reviews.recordPrompt();
 
 The operating system decides whether to display the prompt; a signal records your request to show it, not proof that a dialog appeared. `recordPrompt({ collectDeviceMetadata: false })` omits device metadata.
 
+## Replies in your app
+
+Call `getUnreadReplies()` when your app becomes active, show the replies in your own UI, then call `markRead(replies)`. It returns up to 100 unread replies, oldest first. Feedback history from `getMySubmissions()` also includes `replies`, defaulting to `[]` when an older server omits the field. `FeedbackReply` contains `uuid`, `feedback_uuid`, `body`, `created_at`, and nullable `read_at`; timestamps are strings.
+
+```ts
+import { AppState } from 'react-native';
+
+// Increase in onLogin and onLogout, so a check started for one person never shows or marks replies for the next.
+let session = 0;
+
+async function checkReplies() {
+  const started = session;
+  try {
+    const replies = await uprate.feedback.getUnreadReplies();
+    if (replies.length === 0 || started !== session) return;
+    await showReplies(replies);
+    if (started === session) await uprate.feedback.markRead(replies);
+  } catch (error) {
+    handleError(error);
+  }
+}
+
+const subscription = AppState.addEventListener('change', (state) => {
+  if (state === 'active') void checkReplies();
+});
+```
+
+Also call `checkReplies()` at the end of `onLogin`, so a session restored on a cold start gets its replies too, and close any replies on screen in `onLogout` before the next person signs in. Your app supplies `showReplies`, which resolves after the user has seen the replies, and `handleError`. Call `subscription.remove()` when the owning component unmounts. The SDK does not observe the app lifecycle, poll for replies, persist results, or display UI. It has no `react-native` dependency. `markRead([])` makes no request.
+
 ## Errors and local development
 
-Operations throw `UprateError` with a stable `code`: `user_context_not_set`, `user_context_changed`, `invalid_api_key` (401), `feature_not_enabled` (403), `not_found` (404), `validation_error` (422), `rate_limited` (429), `timeout`, `network_error`, `server_error`, or `unexpected_response`. `validationErrors` holds field errors from a 422 response; `retryAfterSeconds` holds a 429 delay when provided. The SDK does not automatically retry writes. The 15-second timeout applies to the HTTP request, not to your metadata provider.
+Operations throw `UprateError` with a stable `code`: `user_context_not_set`, `user_context_changed`, `user_token_rejected` (401 with `user_token_required` or `user_token_invalid`, preserving the server message), `invalid_api_key` (other 401 responses), `feature_not_enabled` (403), `not_found` (404), `validation_error` (422), `rate_limited` (429), `timeout`, `network_error`, `server_error`, or `unexpected_response`. `validationErrors` holds field errors from a 422 response; `retryAfterSeconds` holds a 429 delay when provided. The SDK does not automatically retry writes. The 15-second timeout applies to the HTTP request, not to your metadata provider.
 
 The default API URL uses HTTPS. For a local Laravel server, opt into HTTP explicitly:
 
