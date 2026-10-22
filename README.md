@@ -163,15 +163,8 @@ const provider = deviceToken.type === 'ios' ? 'apns' : 'fcm';
 uprate.setUserContext({ userId: user.id, userToken: user.userToken });
 await uprate.feedback.registerPushToken({ token, provider });
 
-async function onNotificationTap(data: Record<string, unknown>) {
-  if (replyIdFromPush(data) === null) return;
-  const replies = await uprate.feedback.getUnreadReplies();
-  await showReplies(replies);
-  await uprate.feedback.markRead(replies);
-}
-
 Notifications.addNotificationResponseReceivedListener((response) => {
-  void onNotificationTap(response.notification.request.content.data);
+  if (replyIdFromPush(response.notification.request.content.data) !== null) void checkReplies();
 });
 
 async function onLogout() {
@@ -183,7 +176,7 @@ async function onLogout() {
 }
 ```
 
-Your app supplies `showReplies` as above. `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request. Apps made for kids can't use push; `registerPushToken` rejects with `feature_not_enabled` for them.
+`checkReplies` is the function from [Replies in your app](#replies-in-your-app). `replyIdFromPush` returns a non-empty `uprate_reply_uuid` string or `null` and makes no request. Apps made for kids can't use push; `registerPushToken` rejects with `feature_not_enabled` for them.
 
 ## Errors and local development
 
