@@ -1,6 +1,7 @@
 import { UprateError } from './error.js';
 import type {
   FeatureRequest,
+  FeedbackReply,
   FeedbackResult,
   FeedbackSubmission,
   JsonObject,
@@ -148,10 +149,21 @@ function feedbackResult(value: unknown, status: number): FeedbackResult {
 }
 
 function feedbackSubmission(value: unknown, status: number): FeedbackSubmission {
-  assertFields(value, status, {
+  const data = assertFields(value, status, {
     uuid: 'string', rating: 'number', message: 'string', sentiment: 'string', created_at: 'string',
   }, ['rating', 'sentiment']);
+  data.replies = data.replies === undefined ? [] : feedbackReplies(data, status);
   return value as FeedbackSubmission;
+}
+
+function feedbackReplies(value: unknown, status: number): FeedbackReply[] {
+  const root = assertFields(value, status, { replies: 'array' });
+  return (root.replies as unknown[]).map((item) => {
+    assertFields(item, status, {
+      uuid: 'string', feedback_uuid: 'string', body: 'string', created_at: 'string', read_at: 'string',
+    }, ['read_at']);
+    return item as FeedbackReply;
+  });
 }
 
 function retryAfterSeconds(value: string | null): number | undefined {
@@ -166,7 +178,12 @@ function errorFromResponse(status: number, body: unknown, retryAfter: string | n
   const data = body !== null && typeof body === 'object' && !Array.isArray(body)
     ? body as Record<string, unknown> : {};
   const serverMessage = typeof data.message === 'string' ? data.message : undefined;
-  if (status === 401) return new UprateError('invalid_api_key', serverMessage ?? 'Invalid SDK API key.', { status });
+  if (status === 401) {
+    if (data.code === 'user_token_required' || data.code === 'user_token_invalid') {
+      return new UprateError('user_token_rejected', serverMessage ?? 'SDK user token was rejected.', { status });
+    }
+    return new UprateError('invalid_api_key', serverMessage ?? 'Invalid SDK API key.', { status });
+  }
   if (status === 403) return new UprateError('feature_not_enabled', 'SDK feature is not enabled.', { status });
   if (status === 404) return new UprateError('not_found', 'SDK resource was not found.', { status });
   if (status === 422) {
@@ -235,8 +252,10 @@ export function createUprateClient(options: UprateClientOptions) {
     if (!userId) throw new UprateError('invalid_config', 'SDK user ID must not be empty.');
     const email = context.email === undefined ? undefined : checkedHeader(context.email, 'SDK user email', 255);
     const name = context.name === undefined ? undefined : checkedHeader(context.name, 'SDK user name', 255);
-    if (currentUser?.userId === userId && currentUser.email === email && currentUser.name === name) return;
-    currentUser = { userId, email, name };
+    const userToken = context.userToken === undefined ? undefined : checkedHeader(context.userToken, 'SDK user token', 255);
+    if (currentUser?.userId === userId && currentUser.email === email && currentUser.name === name &&
+      currentUser.userToken === userToken) return;
+    currentUser = { userId, email, name, userToken };
     userRevision++;
   }
 
@@ -248,6 +267,23 @@ export function createUprateClient(options: UprateClientOptions) {
   function snapshotUser(): { user: UserContext; revision: number } {
     if (!currentUser) throw new UprateError('user_context_not_set', 'Set SDK user context before calling an SDK feature.');
     return { user: { ...currentUser }, revision: userRevision };
+  }
+
+  // A private answer, or an error such as a rejected token, for the user who started the request must not reach
+  // the app once someone else is signed in. The check and the decoding run in the step that settles the operation.
+  async function requestForSameUser<T>(
+    method: 'GET' | 'POST', path: string, decode: (data: unknown, status: number) => T, body?: unknown,
+  ): Promise<T> {
+    const snapshot = snapshotUser();
+    const changed = () => new UprateError('user_context_changed', 'SDK user changed during the request.');
+    let result: { data: unknown; status: number };
+    try {
+      result = await request(method, path, snapshot, body);
+    } catch (error) {
+      throw snapshot.revision === userRevision ? error : changed();
+    }
+    if (snapshot.revision !== userRevision) throw changed();
+    return decode(result.data, result.status);
   }
 
   async function request(
@@ -265,6 +301,7 @@ export function createUprateClient(options: UprateClientOptions) {
     };
     if (snapshot.user.email !== undefined) headers['X-SDK-User-Email'] = snapshot.user.email;
     if (snapshot.user.name !== undefined) headers['X-SDK-User-Name'] = snapshot.user.name;
+    if (snapshot.user.userToken !== undefined) headers['X-SDK-User-Token'] = snapshot.user.userToken;
     if (appVersion !== undefined) headers['X-SDK-App-Version'] = appVersion;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     const encodedBody = body === undefined ? undefined : jsonBody(body);
@@ -350,10 +387,20 @@ export function createUprateClient(options: UprateClientOptions) {
         });
         return feedbackResult(result.data, result.status);
       },
-      async getMySubmissions(): Promise<FeedbackSubmission[]> {
-        const result = await request('GET', 'feedback', snapshotUser());
-        const root = assertFields(result.data, result.status, { feedback: 'array' });
-        return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, result.status));
+      getMySubmissions(): Promise<FeedbackSubmission[]> {
+        return requestForSameUser('GET', 'feedback', (data, status) => {
+          const root = assertFields(data, status, { feedback: 'array' });
+          return (root.feedback as unknown[]).map((item) => feedbackSubmission(item, status));
+        });
+      },
+      getUnreadReplies(): Promise<FeedbackReply[]> {
+        return requestForSameUser('GET', 'replies/unread', feedbackReplies);
+      },
+      markRead(replies: FeedbackReply[]): Promise<void> {
+        if (replies.length === 0) return Promise.resolve();
+        return requestForSameUser('POST', 'replies/read', (data, status) => { feedbackReplies(data, status); }, {
+          uuids: replies.map((reply) => reply.uuid),
+        });
       },
     },
     reviews: {

@@ -6,6 +6,7 @@ export interface UserContext {
   userId: string;
   email?: string;
   name?: string;
+  userToken?: string;
 }
 
 export interface UprateClientOptions {
@@ -76,6 +77,15 @@ export interface FeedbackSubmission {
   message: string;
   sentiment: string | null;
   created_at: string;
+  replies: FeedbackReply[];
+}
+
+export interface FeedbackReply {
+  uuid: string;
+  feedback_uuid: string;
+  body: string;
+  created_at: string;
+  read_at: string | null;
 }
 
 export interface ReviewSignalResult {
