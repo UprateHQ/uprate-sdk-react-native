@@ -18,6 +18,11 @@ export { UprateError } from './error.js';
 export type { UprateErrorCode } from './error.js';
 export type * from './types.js';
 
+export function replyIdFromPush(data: Record<string, unknown> | null | undefined): string | null {
+  const replyId = data?.uprate_reply_uuid;
+  return typeof replyId === 'string' && replyId.length > 0 ? replyId : null;
+}
+
 const DEFAULT_URL = 'https://app.upratehq.com/api/sdk/v1';
 const MAX_TIMEOUT_MS = 60_000;
 
@@ -222,6 +227,10 @@ function validatedMetadata(value: JsonObject | null, name: string): JsonObject |
   return value;
 }
 
+// One change at a time across every client in the app, so a slow registration can't reach the server after the
+// logout that unregisters the device.
+let lastPushTokenChange: Promise<unknown> = Promise.resolve();
+
 export function createUprateClient(options: UprateClientOptions) {
   if (!options || typeof options !== 'object') throw new UprateError('invalid_config', 'SDK options are required.');
   const apiKey = checkedHeader(options.apiKey, 'SDK API key', 512);
@@ -333,6 +342,19 @@ export function createUprateClient(options: UprateClientOptions) {
     return { data, status: response.status };
   }
 
+  async function changePushToken(method: 'POST' | 'DELETE', input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+    const snapshot = snapshotUser();
+    if (!input || typeof input.token !== 'string' || !input.token.trim() ||
+      (input.provider !== 'apns' && input.provider !== 'fcm')) {
+      throw new UprateError('validation_error', 'A non-empty push token and provider apns or fcm are required.');
+    }
+    const body = { token: input.token, provider: input.provider };
+    const change = lastPushTokenChange.then(() => request(method, 'push-tokens', snapshot, body));
+    lastPushTokenChange = change.catch(() => undefined);
+    const result = await change;
+    assertFields(result.data, result.status, { status: 'string' });
+  }
+
   async function deviceMetadata(enabled: boolean): Promise<JsonObject | null> {
     if (!enabled || !options.deviceMetadataProvider) return null;
     return validatedMetadata(await options.deviceMetadataProvider(), 'Device metadata');
@@ -401,6 +423,12 @@ export function createUprateClient(options: UprateClientOptions) {
         return requestForSameUser('POST', 'replies/read', (data, status) => { feedbackReplies(data, status); }, {
           uuids: replies.map((reply) => reply.uuid),
         });
+      },
+      registerPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        return changePushToken('POST', input);
+      },
+      unregisterPushToken(input: { token: string; provider: 'apns' | 'fcm' }): Promise<void> {
+        return changePushToken('DELETE', input);
       },
     },
     reviews: {
