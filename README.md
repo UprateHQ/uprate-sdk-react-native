@@ -9,10 +9,10 @@ Use Uprate feedback, roadmap voting, and review signals in iOS and Android apps.
 Until the first npm release, install from GitHub:
 
 ```sh
-npm install github:UprateHQ/uprate-sdk-react-native#feat/react-native-sdk
+npm install github:UprateHQ/uprate-sdk-react-native
 ```
 
-After publication, use `npm install @upratehq/react-native`. The GitHub install builds the package during installation. This preview branch can move; commit your app's lockfile so installs keep using its resolved commit until you update it.
+After publication, use `npm install @upratehq/react-native`. The GitHub install builds the package from `main` during installation. Commit your app's lockfile so installs keep using its resolved commit until you update it.
 
 Create an **SDK publishable key** under Apps → your app → SDK API Keys in Uprate. It starts with `uprt_pub_`. A key from Settings → API keys will not work. Keep `uprt_secret_` keys on your server; never put them in a mobile app.
 
